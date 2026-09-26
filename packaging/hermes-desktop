@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+umask 077
+export HERMES_HOME="$XDG_DATA_HOME/hermes"
+export HERMES_DESKTOP_USER_DATA_DIR="$XDG_CONFIG_HOME/hermes-desktop"
+export HERMES_DESKTOP_HERMES=/app/libexec/hermes-backend
+export HERMES_DESKTOP_CWD="$XDG_DATA_HOME/hermes/workspace"
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
+export ELECTRON_IS_DEV=0
+unset HERMES_DESKTOP_HERMES_ROOT HERMES_DESKTOP_DEV_SERVER HERMES_DESKTOP_IGNORE_EXISTING
+unset NODE_OPTIONS PYTHONPATH PYTHONHOME
+mkdir -p "$HERMES_HOME" "$HERMES_DESKTOP_USER_DATA_DIR" "$HERMES_DESKTOP_CWD"
+cd "$HERMES_DESKTOP_CWD"
+exec zypak-wrapper.sh /app/lib/hermes-electron/electron --class=io.github.jbsanf.HermesDesktop --ozone-platform-hint=auto "$@"

@@ -1,0 +1,88 @@
+--- a/apps/desktop/electron/main.ts
++++ b/apps/desktop/electron/main.ts
+@@ -3347,6 +3347,10 @@
+ // inside applyUpdates. `force` (menu item, Settings "Check now") skips the
+ // cache; the renderer's background poller never passes it.
+ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
++  if (process.env.FLATPAK_ID) {
++    return { supported: false, reason: 'flatpak-managed', branch: 'stable',
++      message: 'Updates are managed by Flatpak. Use your software center to update Hermes Desktop.' }
++  }
+   const updateRoot = resolveUpdateRoot()
+   let { branch } = readDesktopUpdateConfig()
+   const gitDir = path.join(updateRoot, '.git')
+@@ -4192,6 +4196,7 @@
+ // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
+ // only this apply action changed.
+ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
++  if (process.env.FLATPAK_ID) throw new Error('Updates are managed by Flatpak.')
+   if (updateInFlight) {
+     throw new Error('An update is already in progress.')
+   }
+@@ -5283,6 +5288,14 @@
+ }
+ 
+ async function resolveHermesBackend(backendArgs) {
++  if (process.env.FLATPAK_ID) {
++    const command = '/app/libexec/hermes-backend'
++    if (!fileExists(command)) {
++      throw new Error('The Flatpak backend is missing. Repair the application using Flatpak.')
++    }
++    return { kind: 'command', label: 'Flatpak backend', command, args: backendArgs,
++      root: '/app/share/hermes-agent', env: {}, bootstrap: false, shell: false }
++  }
+   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
+   //    checkout. Honour it as-is (no bootstrap; the user is driving).
+   const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
+@@ -15766,6 +15779,7 @@
+ // never ensureRuntime(), which would kick off a first-run install from a menu
+ // click; an unresolved runtime is reported instead.
+ ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) => {
++  if (process.env.FLATPAK_ID) return { ok: false, error: 'This package provides the Desktop interface only.' }
+   if (typeof sessionId !== 'string' || !sessionId.trim()) {
+     return { ok: false, error: 'invalid-session-id' }
+   }
+@@ -15894,6 +15908,7 @@
+   return { ok: true }
+ })
+ ipcMain.handle('hermes:bootstrap:repair', async () => {
++  if (process.env.FLATPAK_ID) throw new Error('Repair this application using Flatpak.')
+   // Forceful repair: force the next startHermes() through the full installer
+   // (refreshing a broken/partial venv) and clear any latched failure + live
+   // connection. The renderer reloads afterwards to re-drive the boot flow.
+@@ -15946,6 +15961,7 @@
+   return { ok: true }
+ })
+ ipcMain.handle('hermes:bootstrap:continue-local', async () => {
++  if (process.env.FLATPAK_ID) throw new Error('The local backend is included in this Flatpak.')
+   rememberLog('[bootstrap] local install selected by renderer; continuing first-launch bootstrap')
+   continueFirstRunLocalBootstrap()
+ 
+@@ -18505,6 +18521,7 @@
+ }
+ 
+ async function runDesktopUninstall(mode) {
++  if (process.env.FLATPAK_ID) throw new Error('Uninstall this application using your software center.')
+   let uninstallArgs
+ 
+   try {
+--- a/apps/desktop/electron/bootstrap-runner.ts
++++ b/apps/desktop/electron/bootstrap-runner.ts
+@@ -899,6 +899,7 @@
+ // ---------------------------------------------------------------------------
+ 
+ async function runBootstrap(opts) {
++  if (process.env.FLATPAK_ID) throw new Error('Installation is managed by Flatpak.')
+   const {
+     installStamp,
+     activeRoot,
+--- a/apps/desktop/electron/shell-path.ts
++++ b/apps/desktop/electron/shell-path.ts
+@@ -186,6 +186,7 @@
+ let _ensurePromise: Promise<any> | null = null
+ 
+ function ensureLoginShellPath(options: any = {}) {
++  if (process.env.FLATPAK_ID) return Promise.resolve({ applied: false, reason: 'unchanged' })
+   if (!_ensurePromise) {
+     _ensurePromise = applyLoginShellPath(options).catch(error => ({
+       applied: false,

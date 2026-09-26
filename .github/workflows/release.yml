@@ -1,0 +1,130 @@
+name: Build, Release and Pages
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: flatpak-production
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      LOCAL_VALIDATION_APPROVED: ${{ vars.LOCAL_VALIDATION_APPROVED }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '26.10.0'
+      - name: Require a validated, versioned release
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          test "$LOCAL_VALIDATION_APPROVED" = true
+          python3 - <<'PY'
+          import json, os
+          version = json.load(open('packaging/config.json'))['version']
+          assert os.environ['RELEASE_REF'] == 'refs/tags/v' + version, 'Select the matching release tag'
+          PY
+      - name: Install tools and runtimes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder ostree appstream desktop-file-utils python3-packaging python3-gi gir1.2-flatpak-1.0 gnupg zstd dbus-x11 xvfb openssh-client
+          flatpak config --user --set languages 'en;pt'
+          scripts/setup.sh
+      - run: python3 scripts/check.py
+      - run: python3 -m unittest discover -s tests -v
+      - run: scripts/build.sh
+      - name: Restore, sign, package and test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNING_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+          SIGNING_PASSPHRASE: ${{ secrets.FLATPAK_GPG_PASSPHRASE }}
+          SIGNING_FINGERPRINT: ${{ secrets.FLATPAK_GPG_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_KEY"
+          test -n "$SIGNING_FINGERPRINT"
+          export GNUPGHOME="$RUNNER_TEMP/hermes-gnupg"
+          install -d -m700 "$GNUPGHOME"
+          trap 'gpgconf --kill gpg-agent; rm -rf "$GNUPGHOME"' EXIT
+          printf '%s' "$SIGNING_KEY" | gpg --batch --import
+          gpg --batch --export "$SIGNING_FINGERPRINT" > "$RUNNER_TEMP/repository.gpg"
+          python3 scripts/restore-repo.py --key-file "$RUNNER_TEMP/repository.gpg"
+          gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 \
+            --local-user "$SIGNING_FINGERPRINT" --detach-sign \
+            --output "$RUNNER_TEMP/key-check.sig" packaging/config.json 3<<< "$SIGNING_PASSPHRASE"
+          python3 scripts/publish-repo.py --production --key "$SIGNING_FINGERPRINT"
+          # Remove signing material before launching the application tests.
+          gpgconf --kill gpg-agent
+          rm -rf "$GNUPGHOME"
+          trap - EXIT
+          unset GNUPGHOME SIGNING_KEY SIGNING_PASSPHRASE SIGNING_FINGERPRINT GH_TOKEN
+          dbus-run-session -- scripts/install-local.sh
+          dbus-run-session -- python3 scripts/ssh-agent-smoke.py
+          dbus-run-session -- python3 scripts/smoke.py
+          xvfb-run -a dbus-run-session -- node scripts/gui-smoke.mjs
+          python3 scripts/verify-origin.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-files
+          path: dist/release/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: dist/pages
+          retention-days: 30
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-files
+          path: dist/release
+      - name: Publish immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          (cd dist/release && sha256sum -c SHA256SUMS)
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            mkdir -p "$RUNNER_TEMP/previous-assets"
+            gh release download "$RELEASE_TAG" --pattern SHA256SUMS --dir "$RUNNER_TEMP/previous-assets"
+            cmp dist/release/SHA256SUMS "$RUNNER_TEMP/previous-assets/SHA256SUMS"
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --title "Hermes Desktop $RELEASE_TAG" \
+              --notes-file docs/RELEASE-NOTES.md dist/release/*
+          fi
+  pages:
+    needs: release
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Deploy the signed repository
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+  verify:
+    needs: pages
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify public repository
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak
+          python3 scripts/verify-pages.py

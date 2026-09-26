@@ -1,0 +1,9 @@
+.cache/
+.flatpak-builder/
+build-dir/
+dist/
+repo/
+.local-keys/
+__pycache__/
+*.pyc
+repo-backup-*/

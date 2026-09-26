@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.jbsanf.HermesDesktop</id>
+  <name>Hermes Desktop</name>
+  <summary>Chat with the Hermes personal AI agent</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.jbsanf"><name>Hermes Desktop community packaging</name></developer>
+  <description>
+    <p>Hermes Desktop provides a graphical chat interface to Hermes Agent by Nous Research, with conversation history, projects, tools and provider settings.</p>
+    <p>This community Flatpak includes a private local backend. External files require an access grant. SSH authentication can use your session SSH agent without exposing private key files. Local commands run inside the Flatpak sandbox. Application updates are managed by Flatpak.</p>
+  </description>
+  <launchable type="desktop-id">io.github.jbsanf.HermesDesktop.desktop</launchable>
+  <url type="homepage">https://github.com/jbsanf/hermes-agent-desktop</url>
+  <url type="bugtracker">https://github.com/jbsanf/hermes-agent-desktop/issues</url>
+  <url type="vcs-browser">https://github.com/jbsanf/hermes-agent-desktop</url>
+  <provides><binary>hermes-desktop</binary></provides>
+  <content_rating type="oars-1.1"/>
+  <releases><release version="2026.9.24-1" date="2026-09-26"/></releases>
+</component>

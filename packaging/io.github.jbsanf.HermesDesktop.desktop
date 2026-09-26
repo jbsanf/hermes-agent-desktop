@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Hermes Desktop
+Comment=Chat with the Hermes personal AI agent
+Exec=hermes-desktop %U
+Icon=io.github.jbsanf.HermesDesktop
+Terminal=false
+Categories=Development;
+StartupWMClass=io.github.jbsanf.HermesDesktop
+MimeType=x-scheme-handler/hermes;
+Keywords=AI;Assistant;Chat;
