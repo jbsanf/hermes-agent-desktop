@@ -19,7 +19,7 @@ manifest = {
     "cleanup": ["/include", "/share/man", "/lib/pkgconfig", "/lib/debug"],
     "build-options": {"strip": True, "no-debuginfo": True,
                       "env": {"GITHUB_SHA": c["upstream_commit"], "GITHUB_REF_NAME": c["upstream_tag"],
-                              "FLATPAK_PACKAGE_VERSION": c["version"]}},
+                              "FLATPAK_PACKAGE_VERSION": c["version"], "ELECTRON_VERSION": c["electron_version"]}},
     "modules": [
         {"name": "git", "buildsystem": "simple", "build-commands": [
             "make -j${FLATPAK_BUILDER_N_JOBS} prefix=/app NO_RUST=YesPlease NO_GETTEXT=YesPlease NO_TCLTK=YesPlease NO_PERL=YesPlease all",

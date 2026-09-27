@@ -1,0 +1,71 @@
+name: Update Hermes Agent
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: update-hermes-agent
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      changed: ${{ steps.update.outputs.changed }}
+      base: ${{ steps.base.outputs.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Record base commit
+        id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Install preparation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder appstream desktop-file-utils python3-packaging python3-venv
+          python3 -m venv --system-site-packages "$RUNNER_TEMP/update-tools"
+          "$RUNNER_TEMP/update-tools/bin/pip" install uv==0.9.26
+          echo "$RUNNER_TEMP/update-tools/bin" >> "$GITHUB_PATH"
+      - name: Prepare and validate update
+        id: update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/update-upstream.py --output "$RUNNER_TEMP/upstream-update"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.update.outputs.changed == 'true'
+        with:
+          name: upstream-update
+          path: ${{ runner.temp }}/upstream-update/
+          if-no-files-found: error
+          retention-days: 7
+  publish-pr:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: upstream-update
+          path: ${{ runner.temp }}/upstream-update
+      - name: Create or update PR and start CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_BASE: ${{ needs.prepare.outputs.base }}
+          UPDATE_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 scripts/publish-update-pr.py \
+            --bundle "$RUNNER_TEMP/upstream-update" \
+            --base "$UPDATE_BASE" --repository "$UPDATE_REPOSITORY"

@@ -20,7 +20,7 @@ cd upstream
 # ship only Desktop. Lifecycle scripts are never run implicitly.
 npm ci --offline --ignore-scripts
 node node_modules/node-gyp/bin/node-gyp.js rebuild --directory=node_modules/node-pty \
-  --target=40.10.2 --arch=x64 --nodedir="$electron_headers" --dist-url=''
+  --target="${ELECTRON_VERSION:?Missing configured Electron version}" --arch=x64 --nodedir="$electron_headers" --dist-url=''
 # Only the renderer, main/preload and their native dependencies are built.
 cd apps/desktop
 mkdir -p build

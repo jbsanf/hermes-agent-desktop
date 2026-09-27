@@ -16,6 +16,7 @@ subprocess.run(["python3", str(ROOT / "scripts/generate-manifest.py"), "--check"
 m = json.loads(original)
 assert m["app-id"] == c["app_id"]
 assert m["default-branch"] == c["branch"]
+assert m["build-options"]["env"]["ELECTRON_VERSION"] == c["electron_version"]
 assert "--socket=ssh-auth" in m["finish-args"]
 assert "--persist=.ssh" in m["finish-args"]
 for flag in m["finish-args"]:

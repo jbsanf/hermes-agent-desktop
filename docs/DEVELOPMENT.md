@@ -8,7 +8,7 @@ Research distribution.
 - App ID: `io.github.jbsanf.HermesDesktop`
 - Remote: `https://jbsanf.github.io/hermes-agent-desktop/repo/`
 - Channel: `stable`
-- Upstream release: Hermes Agent `0.21.5` (tag `v2026.9.24`), pinned by commit and SHA-256.
+- Current upstream release, commit and SHA-256: see `packaging/config.json`.
 
 Run all commands below from the repository root.
 
@@ -193,3 +193,59 @@ you change Electron or the upstream version.
 
 This repository distributes Flatpak packages through GitHub Pages. It is not yet
 part of the Flathub catalog; submitting it to the catalog is a future step.
+
+## Daily upstream update PR
+
+The **Update Hermes Agent** workflow checks the latest stable upstream release
+at 06:17 UTC daily (GitHub may delay scheduled runs). It can also be started with
+**Actions → Update Hermes Agent → Run workflow**. The workflow must be on the
+default branch, `main`, for scheduled execution.
+
+In **Settings → Actions → General → Workflow permissions**, enable **Allow
+GitHub Actions to create and approve pull requests**. Organization policy must
+also permit this setting. No additional secret or GitHub App is required. The
+workflow uses `GITHUB_TOKEN` to create PRs; it does not approve or merge them.
+
+Preparation downloads the archive at the release's resolved commit, takes the
+package version from its `pyproject.toml`, regenerates locked sources and the
+manifest, updates AppStream and release notes, and checks patch applicability
+and static packaging contracts. Electron follows the Desktop workspace's npm
+lock, including its binary/header hashes and the native module build target.
+Node.js, Python and the Flatpak runtime stay pinned; compatibility changes to
+those components require manual maintenance.
+
+Only validated files reach the separate job with repository write permissions.
+It maintains one PR from `automation/update-hermes-agent` to `main`, replacing
+the proposed update when a newer stable release appears. Because PRs created
+with `GITHUB_TOKEN` do not trigger normal PR workflows, it explicitly dispatches
+**Verify Flatpak** on the automation branch. Find that build in Actions at the
+commit linked in the updater's summary. A repeated run reuses the same commit
+and CI run. Failed CI runs can be rerun in Actions after inspecting the failure;
+merging and creating the release tag remain manual, with the existing local
+validation and signing requirements.
+
+The automation branch is reserved for the updater. Make packaging fixes on
+`main`, then rerun the workflow. Manual commits on the automation branch stop
+updates instead of being overwritten. If `main` moves during preparation, rerun
+the workflow. Closing a PR rejects that prepared update; it stays closed until
+you reopen it or a changed proposal is generated. A failed PR creation or CI
+dispatch can be retried by rerunning the updater without creating duplicate
+commits or PRs.
+
+When the release tag and commit already match the configuration, the workflow
+exits without artifacts or a PR. Downgrades, reused package versions, invalid
+versions, unavailable dependencies and incompatible patches fail the run and
+require review. It does not create tags or change `LOCAL_VALIDATION_APPROVED`.
+
+To prepare an update locally without editing the working tree or publishing:
+
+```bash
+python3 scripts/update-upstream.py --output /tmp/hermes-upstream-update
+```
+
+The output directory must not exist. Install the static checking tools listed
+above, plus `uv` (the workflow pins `0.9.26`) and `python3-packaging`. An optional
+`GH_TOKEN` authenticates upstream API requests. Preparation uses a temporary
+copy; the output appears only after all preparation checks pass. The daily
+workflow's first run against the already packaged release should report
+`Upstream already packaged; no changes or PR needed.`
