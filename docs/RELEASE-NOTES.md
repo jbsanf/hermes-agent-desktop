@@ -13,4 +13,5 @@ GitHub Pages and its public key. Once Pages is deployed, update through your
 software center or with `flatpak update`.
 
 The `.flatpakref` and `.flatpakrepo` files also let you install the application
-and add the repository. See the README for dependencies, permissions, and data storage.
+and add the repository. See the [installation instructions](../README.md) and the
+[usage guide](USAGE.md) for permissions and data storage.

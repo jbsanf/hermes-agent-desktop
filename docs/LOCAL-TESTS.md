@@ -17,7 +17,7 @@ Do not enable production publication before recording the results below in
 8. Check history, settings, the integrated terminal, opening links in a browser,
    the clipboard, and the notice that updates are managed by Flatpak.
 9. Close the application and confirm that no backend processes remain running.
-10. Run the update rehearsal described in the README without manually changing
+10. Run the [update rehearsal](DEVELOPMENT.md#update-rehearsal) without manually changing
     the remote between revisions. Preserve test data and record the before/after commits.
 
 The development key must never sign a public release. Remove installations signed
