@@ -2,11 +2,14 @@
 """Validate distribution contracts before downloading or building."""
 import json
 from pathlib import Path
+import re
 import subprocess
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 c = json.loads((ROOT / "packaging/config.json").read_text())
+assert re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", c["version"]), \
+    "Package version must be x.y.z without a v prefix, suffixes or leading zeros"
 manifest_path = ROOT / f"{c['app_id']}.json"
 original = manifest_path.read_bytes()
 subprocess.run(["python3", str(ROOT / "scripts/generate-manifest.py"), "--check"], check=True)

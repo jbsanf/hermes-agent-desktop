@@ -1,6 +1,6 @@
 {
   "app_id": "io.github.jbsanf.HermesDesktop",
-  "version": "2026.9.24-1",
+  "version": "0.21.5",
   "branch": "stable",
   "arch": "x86_64",
   "runtime_version": "25.08",
