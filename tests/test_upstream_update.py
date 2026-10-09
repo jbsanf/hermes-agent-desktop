@@ -84,21 +84,109 @@ class Preparation(unittest.TestCase):
     def test_no_new_release_writes_nothing(self):
         release = dict(RELEASE, tag_name=self.config['upstream_tag'])
         output = self.workspace / 'output'
-        with patch.object(update, 'api', return_value=release), \
+        with patch.object(update, 'api', return_value=[release]), \
                 patch.object(update, 'resolve_tag', return_value=self.config['upstream_commit']), \
                 patch.object(update, 'prepare') as prepare:
             self.assertFalse(update.run(output, self.root))
         self.assertFalse(output.exists())
         prepare.assert_not_called()
 
-    def test_nonstable_release_is_rejected(self):
+    def test_nonstable_releases_are_ignored(self):
         for flag in ('draft', 'prerelease'):
-            with self.subTest(flag=flag), patch.object(update, 'api', return_value=dict(RELEASE, **{flag: True})), \
-                    self.assertRaises(ValueError):
-                update.run(self.workspace / 'output', self.root)
+            with self.subTest(flag=flag), \
+                    patch.object(update, 'api', return_value=[dict(RELEASE, **{flag: True})]), \
+                    patch.object(update, 'resolve_tag') as resolve:
+                self.assertFalse(update.run(self.workspace / 'output', self.root))
+                resolve.assert_not_called()
+        self.assertFalse((self.workspace / 'output').exists())
 
-    def test_prepare_pins_archive_electron_metadata_and_checks(self):
-        archive = self.archive()
+    def receipt_fixture(self, proposed='0.21.6', skip_bundles=True,
+                        final_object='b' * 40, claim_object='c' * 40):
+        release = dict(RELEASE, tag_name='v' + proposed, id=406714323)
+        claim_ref = f'rc.4-v{proposed}'
+        obj = {'type': 'commit', 'sha': COMMIT}
+        claim = {'schema': 1, 'version': proposed, 'commit': COMMIT, 'attempt': 4,
+                 'claimEpoch': 1791456120, 'autopublish': False,
+                 'skipBundles': skip_bundles, 'skipTests': True}
+        final = {'schema': 1, 'version': proposed, 'commit': COMMIT,
+                 'claimTag': claim_ref, 'claimTagObject': claim_object,
+                 'claimEpoch': claim['claimEpoch'], 'autopublish': False,
+                 'releaseId': release['id'], 'archive': f'releases/tag/{claim_ref}/',
+                 'dockerManifestDigest': 'sha256:' + 'd' * 64,
+                 'candidateManifestSha256': None if skip_bundles else 'e' * 64}
+        responses = {
+            '/git/ref/tags/' + release['tag_name']: {'object': {'type': 'tag', 'sha': final_object}},
+            '/git/tags/' + final_object: {'tag': release['tag_name'], 'object': obj,
+                                         'message': json.dumps(final) + '\n'},
+            '/git/tags/' + claim_object: {'tag': claim_ref, 'object': obj,
+                                         'message': json.dumps(claim) + '\n'},
+        }
+        return release, responses
+
+    def test_core_only_release_leaves_output_and_repository_untouched(self):
+        release, responses = self.receipt_fixture()
+        packaged = dict(RELEASE, tag_name=self.config['upstream_tag'])
+        responses['/releases?per_page=100&page=1'] = [release, packaged]
+        output = self.workspace / 'output'
+        before = {filename: (self.root / filename).read_bytes() for filename in update.FILES}
+        summary = self.workspace / 'summary'
+        with patch.object(update, 'api', side_effect=responses.__getitem__), \
+                patch.object(update, 'resolve_tag', return_value=self.config['upstream_commit']), \
+                patch.object(update, 'download') as download, patch.object(update, 'prepare') as prepare, \
+                patch.dict(update.os.environ, {'GITHUB_STEP_SUMMARY': str(summary)}):
+            self.assertFalse(update.run(output, self.root))
+        self.assertIn('Skipping v0.21.6', summary.read_text())
+        self.assertIn('No new stable Desktop release', summary.read_text())
+        self.assertFalse(output.exists())
+        self.assertEqual(before, {filename: (self.root / filename).read_bytes() for filename in update.FILES})
+        download.assert_not_called()
+        prepare.assert_not_called()
+
+    def test_selection_continues_past_core_only_and_nonstable_releases(self):
+        skipped, responses = self.receipt_fixture('0.23.0')
+        bundled, bundle_responses = self.receipt_fixture(
+            '0.22.0', skip_bundles=False, final_object='f' * 40, claim_object='1' * 40)
+        responses.update(bundle_responses)
+        responses['/releases?per_page=100&page=1'] = [dict(RELEASE, prerelease=True)] * 99 + [skipped]
+        responses['/releases?per_page=100&page=2'] = [dict(RELEASE, draft=True), bundled]
+        with patch.object(update, 'api', side_effect=responses.__getitem__):
+            self.assertEqual(update.select_release(self.config), (bundled, COMMIT, '0.22.0'))
+
+    def test_signed_receipts_are_read_without_the_signature_armor(self):
+        release, responses = self.receipt_fixture(skip_bundles=False)
+        for path, response in responses.items():
+            if path.startswith('/git/tags/'):
+                response['message'] += '\n-----BEGIN PGP SIGNATURE-----\nfixture\n-----END PGP SIGNATURE-----\n'
+        with patch.object(update, 'api', side_effect=responses.__getitem__):
+            self.assertEqual(update.release_identity(release), (COMMIT, '0.21.6', True))
+
+    def test_invalid_receipts_and_claims_fail_instead_of_skipping(self):
+        cases = [('final', 'version', '0.99.0'), ('final', 'commit', 'f' * 40),
+                 ('final', 'releaseId', 123), ('final', 'claimTag', 'rc.4-v0.99.0'),
+                 ('final', 'claimTagObject', None), ('final', 'schema', 2),
+                 ('final', 'candidateManifestSha256', 'e' * 64),
+                 ('claim', 'skipBundles', 'true'), ('claim', 'skipBundles', False),
+                 ('claim', 'version', '0.99.0'), ('claim', 'attempt', 5),
+                 ('claim', 'commit', 'f' * 40), ('claim', 'claimEpoch', 123)]
+        for kind, field, value in cases:
+            with self.subTest(kind=kind, field=field):
+                release, responses = self.receipt_fixture()
+                response = responses['/git/tags/' + ('b' if kind == 'final' else 'c') * 40]
+                record = json.loads(response['message'])
+                record[field] = value
+                response['message'] = json.dumps(record)
+                with patch.object(update, 'api', side_effect=responses.__getitem__), self.assertRaises(ValueError):
+                    update.release_identity(release)
+
+    def test_semver_requires_receipt_and_unknown_tags_are_rejected(self):
+        for tag in ('v0.22.0', 'v0.22.0rc1', 'rc.1-v0.22.0', 'v0.22.0+canary.20261001T000000Z'):
+            with self.subTest(tag=tag), \
+                    patch.object(update, 'api', return_value={'object': {'type': 'commit', 'sha': COMMIT}}), \
+                    self.assertRaises(ValueError):
+                update.release_identity(dict(RELEASE, tag_name=tag))
+
+    def assert_preparation(self, source_version='0.22.0', receipt_version=None):
+        archive = self.archive(proposed=source_version)
         urls = []
 
         def download(url, target):
@@ -113,7 +201,7 @@ class Preparation(unittest.TestCase):
 
         with patch.object(update, 'download', side_effect=download), \
                 patch.object(update.subprocess, 'run', side_effect=run_generator) as run:
-            metadata = update.prepare(self.root, RELEASE, COMMIT, self.workspace)
+            metadata = update.prepare(self.root, RELEASE, COMMIT, self.workspace, receipt_version)
         config = json.loads((self.root / 'packaging/config.json').read_text())
         self.assertEqual(config['upstream_commit'], COMMIT)
         self.assertEqual(config['upstream_tag'], RELEASE['tag_name'])
@@ -138,6 +226,42 @@ class Preparation(unittest.TestCase):
         self.assertTrue(commands[-1][1].endswith('/scripts/check.py'))
         self.assertIn(RELEASE['html_url'], (self.root / 'docs/RELEASE-NOTES.md').read_text())
 
+    def test_prepare_pins_archive_electron_metadata_and_checks(self):
+        self.assert_preparation()
+
+    def test_receipt_version_replaces_source_placeholder_throughout_bundle(self):
+        self.assert_preparation(source_version='0.0.0', receipt_version='0.22.0')
+
+    def test_bundled_receipt_prepares_output_without_editing_repository(self):
+        release, responses = self.receipt_fixture('0.22.0', skip_bundles=False)
+        responses['/releases?per_page=100&page=1'] = [release]
+        archive = self.archive(proposed='0.0.0')
+        output = self.workspace / 'output'
+        before = {filename: (self.root / filename).read_bytes() for filename in update.FILES}
+        with patch.object(update, 'api', side_effect=responses.__getitem__), \
+                patch.object(update, 'download', side_effect=lambda url, target: shutil.copyfile(archive, target)), \
+                patch.object(update.subprocess, 'run'):
+            self.assertTrue(update.run(output, self.root))
+        self.assertEqual(json.loads((output / 'update.json').read_text())['version'], '0.22.0')
+        config = json.loads((output / 'packaging/config.json').read_text())
+        self.assertEqual((config['version'], config['upstream_tag'], config['upstream_commit']),
+                         ('0.22.0', 'v0.22.0', COMMIT))
+        self.assertTrue(all((output / filename).is_file() for filename in update.FILES))
+        self.assertEqual(before, {filename: (self.root / filename).read_bytes() for filename in update.FILES})
+
+    def test_receipt_version_still_rejects_downgrades_and_source_mismatches(self):
+        for source, receipt in (('0.0.0', '0.21.5'), ('0.0.0', '0.20.9'),
+                                ('0.23.0', '0.22.0'), ('0.0.0', None)):
+            with self.subTest(source=source, receipt=receipt):
+                workspace = self.workspace / f'case-{source}-{receipt}'
+                workspace.mkdir()
+                archive = self.archive(proposed=source)
+                with patch.object(update, 'download', side_effect=lambda url, target: shutil.copyfile(archive, target)), \
+                        patch.object(update.subprocess, 'run') as run, self.assertRaises(ValueError):
+                    update.prepare(self.root, RELEASE, COMMIT, workspace, receipt)
+                run.assert_not_called()
+                self.assertEqual(json.loads((self.root / 'packaging/config.json').read_text()), self.config)
+
     def test_failure_leaves_repository_and_output_untouched(self):
         archive = self.archive()
         before = {filename: (self.root / filename).read_bytes() for filename in update.FILES}
@@ -149,7 +273,7 @@ class Preparation(unittest.TestCase):
         # Fail patch check, dependency generation, or the final static checks.
         for fail_at in (0, 1, 3):
             calls = [None] * fail_at + [subprocess.CalledProcessError(1, 'validation')]
-            with self.subTest(fail_at=fail_at), patch.object(update, 'api', return_value=RELEASE), \
+            with self.subTest(fail_at=fail_at), patch.object(update, 'api', return_value=[RELEASE]), \
                     patch.object(update, 'resolve_tag', return_value=COMMIT), \
                     patch.object(update, 'download', side_effect=download), \
                     patch.object(update.subprocess, 'run', side_effect=calls), \

@@ -126,15 +126,18 @@ Results from this run: [validation results](VALIDATION.md).
 
 ## GitHub Actions → Release → Pages
 
-The package version follows the version declared by Hermes Agent in its
-`pyproject.toml`. Store it as three numeric components (`0.21.5`) in
+The package version follows Hermes Agent's published release identity. Legacy
+CalVer releases declare it in `pyproject.toml`; new stable releases use an
+annotated `vX.Y.Z` receipt tag while the source may declare `0.0.0`.
+Store it as three numeric components (`0.21.5`) in
 `packaging/config.json`, without a `v` prefix, suffixes, or leading zeros.
 Keep AppStream metadata in sync and regenerate the manifest with
 `python3 scripts/generate-manifest.py`. Tags and release titles use `v0.21.5`;
 the bundle is named `HermesDesktop-0.21.5-x86_64.flatpak`.
 
-Upstream Git tags use a separate convention: Hermes Agent `0.21.5` is released
-under `v2026.9.24`. Keep that actual tag in `upstream_tag`, together with its
+Historical upstream Git tags use a separate convention: Hermes Agent `0.21.5`
+is released under `v2026.9.24`; the newer stable pipeline uses tags such as
+`v0.21.6`. Keep the actual tag in `upstream_tag`, together with its
 commit and archive hash. Existing tags and historical validation reports retain
 their original version numbers.
 
@@ -196,7 +199,7 @@ part of the Flathub catalog; submitting it to the catalog is a future step.
 
 ## Daily upstream update PR
 
-The **Update Hermes Agent** workflow checks the latest stable upstream release
+The **Update Hermes Agent** workflow checks stable upstream releases, newest first,
 at 06:17 UTC daily (GitHub may delay scheduled runs). It can also be started with
 **Actions → Update Hermes Agent → Run workflow**. The workflow must be on the
 default branch, `main`, for scheduled execution.
@@ -206,8 +209,19 @@ GitHub Actions to create and approve pull requests**. Organization policy must
 also permit this setting. No additional secret or GitHub App is required. The
 workflow uses `GITHUB_TOKEN` to create PRs; it does not approve or merge them.
 
+New stable tags carry a JSON publication receipt that binds the release ID,
+version, commit and immutable attempt tag object. The updater reads that
+attempt's `skipBundles` flag: releases that exclude Desktop bundles are skipped
+and recorded in the Actions summary. It continues looking for a compatible
+release, including across API pages, until it reaches the packaged release.
+Drafts and prereleases are ignored. Missing or inconsistent receipts fail the
+run rather than being treated as a release without Desktop. It does not infer
+Desktop availability from prose or GitHub assets (upstream stores binaries
+outside GitHub).
+
 Preparation downloads the archive at the release's resolved commit, takes the
-package version from its `pyproject.toml`, regenerates locked sources and the
+package version from the validated receipt (or `pyproject.toml` for legacy
+CalVer tags), regenerates locked sources and the
 manifest, updates AppStream and release notes, and checks patch applicability
 and static packaging contracts. Electron follows the Desktop workspace's npm
 lock, including its binary/header hashes and the native module build target.
@@ -232,8 +246,10 @@ you reopen it or a changed proposal is generated. A failed PR creation or CI
 dispatch can be retried by rerunning the updater without creating duplicate
 commits or PRs.
 
-When the release tag and commit already match the configuration, the workflow
-exits without artifacts or a PR. Downgrades, reused package versions, invalid
+For receipt-based releases, the source version must be `0.0.0` or match the
+receipt version. When the selected Desktop release tag and commit already
+match the configuration, or no stable Desktop release is available, the workflow
+exits successfully without artifacts or a PR. Downgrades, reused package versions, invalid
 versions, unavailable dependencies and incompatible patches fail the run and
 require review. It does not create tags or change `LOCAL_VALIDATION_APPROVED`.
 
@@ -247,5 +263,5 @@ The output directory must not exist. Install the static checking tools listed
 above, plus `uv` (the workflow pins `0.9.26`) and `python3-packaging`. An optional
 `GH_TOKEN` authenticates upstream API requests. Preparation uses a temporary
 copy; the output appears only after all preparation checks pass. The daily
-workflow's first run against the already packaged release should report
-`Upstream already packaged; no changes or PR needed.`
+workflow's run against the already packaged release should report
+`No new stable Desktop release; no changes or PR needed.`

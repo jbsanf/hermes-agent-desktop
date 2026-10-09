@@ -89,6 +89,90 @@ def check_version(current, proposed):
         raise ValueError(f'Upstream revision requires a new package version: {current} -> {proposed}')
 
 
+def tag_record(tag):
+    # Signed annotated tags include an armored signature after the JSON record.
+    try:
+        record = json.loads(tag['message'].split('\n-----BEGIN ', 1)[0])
+    except (KeyError, TypeError, AttributeError, json.JSONDecodeError) as error:
+        raise ValueError('Invalid upstream release tag metadata') from error
+    if not isinstance(record, dict):
+        raise ValueError('Invalid upstream release tag metadata')
+    return record
+
+
+def release_identity(release):
+    """Return (commit, receipt version, includes Desktop) for a stable release."""
+    tag = release['tag_name']
+    if re.fullmatch(r'v[0-9]{1,3}\.[0-9]+\.[0-9]+', tag) is None:
+        # Historical CalVer releases carry the package version in pyproject.toml.
+        if re.fullmatch(r'v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}', tag) is None:
+            raise ValueError(f'Unsupported stable upstream tag: {tag!r}')
+        return resolve_tag(tag), None, True
+    proposed = tag[1:]
+    version(proposed)
+    obj = api('/git/ref/tags/' + quote(tag, safe=''))['object']
+    if obj['type'] != 'tag' or not re.fullmatch(r'[a-f0-9]{40}', obj['sha']):
+        raise ValueError('Stable upstream release requires an annotated receipt tag')
+    receipt_tag = api('/git/tags/' + obj['sha'])
+    commit = receipt_tag['object']['sha']
+    receipt = tag_record(receipt_tag)
+    claim_ref = receipt.get('claimTag', '')
+    claim_object = receipt.get('claimTagObject', '')
+    if (receipt_tag['tag'] != tag or receipt_tag['object']['type'] != 'commit'
+            or not re.fullmatch(r'[a-f0-9]{40}', commit)
+            or receipt.get('schema') != 1 or receipt.get('version') != proposed
+            or receipt.get('commit') != commit or receipt.get('releaseId') != release['id']
+            or not isinstance(claim_ref, str)
+            or re.fullmatch(r'rc\.[1-9][0-9]*-' + re.escape(tag), claim_ref) is None
+            or not isinstance(claim_object, str)
+            or re.fullmatch(r'[a-f0-9]{40}', claim_object) is None):
+        raise ValueError('Upstream release receipt differs from its tag or release')
+    # Read the immutable claim object bound by the final receipt, not a mutable ref.
+    claim_tag = api('/git/tags/' + claim_object)
+    claim = tag_record(claim_tag)
+    if (claim_tag['tag'] != claim_ref or claim_tag['object'] != receipt_tag['object']
+            or claim.get('schema') != 1 or claim.get('version') != proposed
+            or claim.get('commit') != commit
+            or claim.get('attempt') != int(claim_ref.split('-')[0][3:])
+            or type(claim.get('skipBundles')) is not bool
+            or claim.get('claimEpoch') != receipt.get('claimEpoch')
+            or claim.get('autopublish') != receipt.get('autopublish')):
+        raise ValueError('Upstream release claim differs from its receipt')
+    manifest = receipt.get('candidateManifestSha256')
+    manifest_ok = (manifest is None if claim['skipBundles'] else
+                   isinstance(manifest, str) and re.fullmatch(r'[a-f0-9]{64}', manifest) is not None)
+    if 'candidateManifestSha256' not in receipt or not manifest_ok:
+        raise ValueError('Upstream bundle manifest differs from its release policy')
+    return commit, proposed, not claim['skipBundles']
+
+
+def report(message):
+    print(message)
+    if os.environ.get('GITHUB_STEP_SUMMARY'):
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
+            stream.write(message + '\n')
+
+
+def select_release(config):
+    """Find the newest stable Desktop release, stopping at the packaged release."""
+    page = 1
+    while True:
+        releases = api(f'/releases?per_page=100&page={page}')
+        for release in releases:
+            if release['draft'] or release['prerelease']:
+                continue
+            commit, proposed, desktop = release_identity(release)
+            if not desktop:
+                report(f'Skipping {release["tag_name"]}: upstream release excludes Desktop bundles.')
+                continue
+            if commit == config['upstream_commit'] and release['tag_name'] == config['upstream_tag']:
+                return None
+            return release, commit, proposed
+        if len(releases) < 100:
+            return None
+        page += 1
+
+
 def electron_version(source):
     packages = json.loads((source / 'package-lock.json').read_text())['packages']
     # Follow Node resolution from the Desktop workspace, including hoisted locks.
@@ -105,7 +189,7 @@ def sha256(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def prepare(root, release, commit, workspace):
+def prepare(root, release, commit, workspace, receipt_version=None):
     config = json.loads((root / 'packaging/config.json').read_text())
     archive = workspace / 'upstream.tar.gz'
     download(UPSTREAM + '/tarball/' + commit, archive)
@@ -118,6 +202,10 @@ def prepare(root, release, commit, workspace):
         raise ValueError('Expected one upstream archive root')
     source = children[0]
     proposed = tomllib.loads((source / 'pyproject.toml').read_text())['project']['version']
+    if receipt_version is not None:
+        if proposed not in ('0.0.0', receipt_version):
+            raise ValueError('Upstream source version differs from its release receipt')
+        proposed = receipt_version
     check_version(config['version'], proposed)
     electron = electron_version(source)
     updated = dict(config, version=proposed, upstream_tag=release['tag_name'],
@@ -159,19 +247,17 @@ def run(output, root=ROOT):
     if output.exists():
         raise ValueError('Output must be a new directory')
     config = json.loads((root / 'packaging/config.json').read_text())
-    release = api('/releases/latest')
-    if release['draft'] or release['prerelease']:
-        raise ValueError('Expected a stable upstream release')
-    commit = resolve_tag(release['tag_name'])
-    if commit == config['upstream_commit'] and release['tag_name'] == config['upstream_tag']:
-        print('Upstream already packaged; no changes or PR needed.')
+    selected = select_release(config)
+    if selected is None:
+        report('No new stable Desktop release; no changes or PR needed.')
         return False
+    release, commit, receipt_version = selected
     with tempfile.TemporaryDirectory(prefix='hermes-update-') as directory:
         workspace = Path(directory)
         staging = workspace / 'repository'
         shutil.copytree(root, staging, ignore=shutil.ignore_patterns(
             '.git', '.cache', '.flatpak-builder', 'build-dir', 'dist', 'repo', '.local-keys', '__pycache__', 'repo-backup-*'))
-        metadata = prepare(staging, release, commit, workspace)
+        metadata = prepare(staging, release, commit, workspace, receipt_version)
         output.mkdir(parents=True)
         for filename in FILES:
             target = output / filename
@@ -198,7 +284,7 @@ def main():
             stream.write(f'changed={str(changed).lower()}\n')
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
-            stream.write('Update prepared for review.\n' if changed else 'Upstream already packaged; no changes or PR needed.\n')
+            stream.write('Update prepared for review.\n' if changed else 'No update prepared.\n')
 
 
 if __name__ == '__main__':
